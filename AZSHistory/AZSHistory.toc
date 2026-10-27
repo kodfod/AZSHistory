@@ -1,8 +1,11 @@
 ## Interface: 11200
 ## Title: AZS Run History
 ## Notes: Records each run that you play. Shows the spells, the items, the loot, the stats and the damage of your past runs. Type /runs to open the window.
-## Version: 0.1.2
+## Version: 0.2.0
 ## SavedVariables: AZSHistoryDB
 Data.lua
 Lang.lua
+Spells.lua
+Strings.lua
+Custom.lua
 AZSHistory.lua
