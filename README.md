@@ -33,6 +33,8 @@ The addon does not keep a run that did not start. If you enter a zone and leave 
 | --- | --- |
 | `/runs` | Opens or closes the history window. |
 | `/runs minimap` | Shows or hides the minimap button. |
+| `/runs key <key>` | Sets a key that opens or closes the window. Example: `/runs key F8`. |
+| `/runs key none` | Removes the key. |
 | `/runs tz <hours>` | Sets your time zone in hours from UTC. Example: `/runs tz -5`. |
 | `/runs help` | Shows the commands. |
 
@@ -41,7 +43,7 @@ The commands `/runhistory` and `/azh` do the same thing as `/runs`.
 You can also open the window with these controls:
 
 - Click the book button on the minimap. Drag the button to move it.
-- Set a key for "Run History" in the key bindings.
+- Push the key that you set with `/runs key`.
 
 To close the window, push Escape. To move the window, drag its top area.
 
@@ -49,6 +51,7 @@ To close the window, push Escape. To move the window, drag its top area.
 
 - The game loads addons only in a run. You cannot open the window from the main menu. Open the window before you move at the start of a run. The run clock does not start until you move.
 - The game shows its end screen above all addon windows. Close the end screen before you open the history.
+- The Key Bindings page of the game does not show addon key bindings. Use `/runs key` to set a key for the window.
 - The game gives times in UTC. Use `/runs tz` to set your time zone.
 
 ## Saved data

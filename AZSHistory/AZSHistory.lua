@@ -2007,10 +2007,38 @@ mm:SetScript("OnLeave", function() GameTooltip:Hide(); end);
 SLASH_AZSHISTORY1 = "/runs";
 SLASH_AZSHISTORY2 = "/runhistory";
 SLASH_AZSHISTORY3 = "/azh";
+local function ApplyKey()
+	local key = db and db.settings.key;
+	if ( key and SetBinding ) then SetBinding(key, "AZSHISTORY_TOGGLE"); end
+end
+
+local function SetKey(key)
+	if ( key == "" ) then
+		Print(db.settings.key and ("The key for the history is " .. db.settings.key .. ".") or "The history has no key. Type /runs key <key> to set one. Example: /runs key F8.");
+		return;
+	end
+	if ( db.settings.key and SetBinding ) then SetBinding(db.settings.key); end
+	if ( key == "NONE" ) then
+		db.settings.key = nil;
+		Print("The history has no key now.");
+		return;
+	end
+	local old = GetBindingAction and GetBindingAction(key);
+	db.settings.key = key;
+	ApplyKey();
+	if ( old and old ~= "" and old ~= "AZSHISTORY_TOGGLE" ) then
+		Print("The key " .. key .. " opens the history now. It no longer does " .. (getglobal("BINDING_NAME_" .. old) or old) .. ".");
+	else
+		Print("The key " .. key .. " opens the history now.");
+	end
+end
+
 SlashCmdList["AZSHISTORY"] = function(msg)
 	msg = string.lower(msg or "");
 	local _, _, cmd, rest = string.find(msg, "^%s*(%S*)%s*(.-)%s*$");
-	if ( cmd == "minimap" ) then
+	if ( cmd == "key" ) then
+		SetKey(string.upper(rest));
+	elseif ( cmd == "minimap" ) then
 		db.settings.hideMinimap = not db.settings.hideMinimap;
 		if ( db.settings.hideMinimap ) then mm:Hide(); else mm:Show(); end
 		Print(db.settings.hideMinimap and "The minimap button is hidden. Type /runs minimap to show it." or "The minimap button is shown.");
@@ -2020,7 +2048,7 @@ SlashCmdList["AZSHISTORY"] = function(msg)
 		Print(h and string.format("Times show in UTC%+g.", h) or "Times show in UTC.");
 		Refresh();
 	elseif ( cmd == "help" ) then
-		Print("Type /runs to open or close the history. Type /runs minimap to show or hide the minimap button. Type /runs tz <hours> to set your time zone in hours from UTC. Example: /runs tz -5.");
+		Print("Type /runs to open or close the history. Type /runs minimap to show or hide the minimap button. Type /runs key <key> to set a key for the history. Type /runs key none to remove it. Type /runs tz <hours> to set your time zone in hours from UTC. Example: /runs tz -5.");
 	else
 		AZSHistory_Toggle();
 	end
@@ -2113,6 +2141,7 @@ events:SetScript("OnEvent", function()
 		LearnSpellbook();
 	elseif ( event == "PLAYER_ENTERING_WORLD" ) then
 		LearnSpellbook();
+		ApplyKey();
 	elseif ( event == "PLAYER_LOGOUT" ) then
 		if ( cur ) then CaptureEnd(); end
 		RestoreHud();
