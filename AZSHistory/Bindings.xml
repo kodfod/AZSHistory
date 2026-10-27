@@ -1,0 +1,5 @@
+<Bindings>
+	<Binding name="AZSHISTORY_TOGGLE" header="AZSHISTORY">
+		AZSHistory_Toggle();
+	</Binding>
+</Bindings>
