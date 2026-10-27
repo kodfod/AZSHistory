@@ -166,9 +166,223 @@ local function SpellName(key)
 	return (AZSHistory_SpellNames and AZSHistory_SpellNames[key]) or (db and db.names[key]) or Pretty(key);
 end
 
+local Tr, SetLang, DetectLang, LangKey, LangMatch, LangHas, TalentText, Native;
+
+do
+	local LANG = { cache = {} };
+
+	local function LangBuild()
+		if ( LANG.rev or not AZSHistory_Lang ) then return; end
+		LANG.rev, LANG.byKey, LANG.tpl, LANG.pat = {}, {}, {}, {};
+		local rows = AZSHistory_Lang.rows;
+		local n = table.getn(AZSHistory_Lang.codes);
+		for i = 1, table.getn(rows) do
+			local row = rows[i];
+			if ( row[1] ) then LANG.byKey[row[1]] = row; end
+			for c = 2, n + 1 do
+				if ( LANG.rev[row[c]] == nil ) then LANG.rev[row[c]] = row; end
+			end
+			if ( string.find(row[2], "{%a+}") or string.find(row[2], "%%[sd]") ) then table.insert(LANG.tpl, row); end
+		end
+	end
+
+	local function LangCompile(s)
+		local pat, names, frag, pos, count = "^", {}, "", 1, 0;
+		while ( true ) do
+			local a, b, name = string.find(s, "{(%a+)}", pos);
+			local a2, b2 = string.find(s, "%%[sd]", pos);
+			if ( a2 and (not a or a2 < a) ) then
+				count = count + 1;
+				a, b, name = a2, b2, "#" .. count;
+			end
+			local lit = string.sub(s, pos, (a or 0) - 1);
+			if ( not a ) then lit = string.sub(s, pos); end
+			if ( string.len(lit) > string.len(frag) ) then frag = lit; end
+			pat = pat .. string.gsub(lit, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1");
+			if ( not a ) then break; end
+			pat = pat .. "(.-)";
+			table.insert(names, name);
+			pos = b + 1;
+		end
+		if ( string.len(frag) < 3 ) then return nil; end
+		return { pat = pat .. "$", names = names, frag = frag };
+	end
+
+	local function LangFill(s, caps)
+		local count = 0;
+		s = string.gsub(s, "{(%a+)}", function(n) return caps[n] or ("{" .. n .. "}"); end);
+		s = string.gsub(s, "%%[sd]", function() count = count + 1; return caps["#" .. count] or ""; end);
+		return s;
+	end
+
+	local function LangTemplate(text, depth)
+		local n = table.getn(AZSHistory_Lang.codes);
+		for i = 1, table.getn(LANG.tpl) do
+			local row = LANG.tpl[i];
+			LANG.pat[row] = LANG.pat[row] or {};
+			for c = 2, n + 1 do
+				local p = LANG.pat[row][c];
+				if ( p == nil ) then
+					p = LangCompile(row[c]) or false;
+					LANG.pat[row][c] = p;
+				end
+				if ( p and string.find(text, p.frag, 1, 1) ) then
+					local found = { string.find(text, p.pat) };
+					if ( found[1] ) then
+						local caps, known = {}, true;
+						for k = 1, table.getn(p.names) do
+							local cap = found[k + 2];
+							local t = Tr(cap, depth + 1);
+							if ( t == cap and not LANG.rev[cap] and string.find(cap, "[^%d%s%.,%%%+%-]") ) then known = false; end
+							caps[p.names[k]] = t;
+						end
+						if ( known ) then return LangFill(row[LANG.li + 1], caps); end
+					end
+				end
+			end
+		end
+		return nil;
+	end
+
+	local function LangLine(text, depth)
+		local row = LANG.rev[text];
+		if ( row ) then return row[LANG.li + 1]; end
+		local _, _, base, num = string.find(text, "^(.+) ([IVX]+)$");
+		if ( base and LANG.rev[base] ) then return LANG.rev[base][LANG.li + 1] .. " " .. num; end
+		local _, _, said = string.find(text, "^(.-)!$");
+		if ( said and LANG.rev[said] ) then return LANG.rev[said][LANG.li + 1] .. "!"; end
+		local _, _, open, inner = string.find(text, "^(|c%x%x%x%x%x%x%x%x)(.-)|r$");
+		if ( open ) then return open .. Tr(inner, depth + 1) .. "|r"; end
+		if ( depth < 3 ) then return LangTemplate(text, depth); end
+		return nil;
+	end
+
+	Tr = function(text, depth)
+		if ( type(text) ~= "string" or text == "" or not LANG.li or not AZSHistory_Lang ) then return text; end
+		depth = depth or 0;
+		if ( depth == 0 and LANG.cache[text] ) then return LANG.cache[text]; end
+		LangBuild();
+		local out = LangLine(text, depth);
+		if ( not out and string.find(text, "\n", 1, 1) ) then
+			local parts, changed = {}, false;
+			for seg in string.gfind(text .. "\n", "(.-)\n") do
+				local t = seg ~= "" and LangLine(seg, depth) or nil;
+				if ( t ) then changed = true; end
+				table.insert(parts, t or seg);
+			end
+			if ( changed ) then out = table.concat(parts, "\n"); end
+		end
+		out = out or text;
+		if ( depth == 0 ) then LANG.cache[text] = out; end
+		return out;
+	end
+
+	function SetLang(code)
+		if ( not AZSHistory_Lang ) then return; end
+		local codes = AZSHistory_Lang.codes;
+		for i = 1, table.getn(codes) do
+			if ( codes[i] == code and LANG.li ~= i ) then
+				LANG.li = i;
+				LANG.cache = {};
+			end
+		end
+	end
+
+	function DetectLang()
+		local z = AZS_ZONE;
+		if ( not z or not AZSHistory_Lang or not db ) then return; end
+		LangBuild();
+		local checks = {};
+		local function Check(row, value)
+			if ( row and value and value ~= "" ) then table.insert(checks, { row, value }); end
+		end
+		if ( z.zone ) then
+			Check(LANG.byKey["zone." .. z.zone .. ".name"], z.zname);
+			Check(LANG.byKey["zone." .. z.zone .. ".subtitle"], z.zsub);
+		end
+		if ( z.class ) then Check(LANG.byKey["class." .. z.class .. ".name"], z.cname); end
+		if ( z.race ) then Check(LANG.rev[z.race], z.rname); end
+		if ( table.getn(checks) == 0 ) then return; end
+		local codes = AZSHistory_Lang.codes;
+		local best, most = nil, 0;
+		for c = 1, table.getn(codes) do
+			local score = 0;
+			for i = 1, table.getn(checks) do
+				if ( checks[i][1][c + 1] == checks[i][2] ) then score = score + 1; end
+			end
+			if ( score > most or (score == most and score > 0 and c == LANG.li) ) then best, most = c, score; end
+		end
+		if ( best ) then
+			db.lang = codes[best];
+			SetLang(db.lang);
+		end
+	end
+
+	function LangKey(key)
+		LangBuild();
+		local row = LANG.byKey and LANG.byKey[key];
+		return row and LANG.li and row[LANG.li + 1] or nil;
+	end
+
+	function LangMatch(text, template)
+		LangBuild();
+		local row = LANG.rev and LANG.rev[template];
+		if ( not row ) then return nil; end
+		local n = table.getn(AZSHistory_Lang.codes);
+		LANG.pat[row] = LANG.pat[row] or {};
+		for c = 2, n + 1 do
+			local p = LANG.pat[row][c];
+			if ( p == nil ) then
+				p = LangCompile(row[c]) or false;
+				LANG.pat[row][c] = p;
+			end
+			if ( p ) then
+				local found = { string.find(text, p.pat) };
+				if ( found[1] ) then
+					local caps = {};
+					for k = 1, table.getn(p.names) do caps[p.names[k]] = found[k + 2]; end
+					return caps;
+				end
+			end
+		end
+		return nil;
+	end
+
+	function LangHas(text, template)
+		LangBuild();
+		local row = LANG.rev and LANG.rev[template];
+		if ( not row ) then return string.find(text, template, 1, 1) ~= nil; end
+		for c = 2, table.getn(AZSHistory_Lang.codes) + 1 do
+			if ( string.find(text, row[c], 1, 1) ) then return true; end
+		end
+		return false;
+	end
+
+	function TalentText(info)
+		if ( not info or not info[2] ) then return nil; end
+		local en = string.gsub(info[2], "^X", "{v}");
+		en = string.gsub(en, "([ %(])X([%% t])", "%1{v}%2");
+		local t = Tr(en);
+		if ( t == en ) then t = info[2]; else t = string.gsub(t, "{v}", "X"); end
+		if ( string.find(info[2], "^%a+%.%s") ) then
+			local _, e = string.find(t, "^[^%.]-%.%s+");
+			if ( e ) then t = string.sub(t, e + 1); end
+		end
+		return t;
+	end
+
+	function Native(name)
+		if ( not name ) then return name; end
+		LangBuild();
+		local row = LANG.rev and LANG.rev[name];
+		return row and row[2] or name;
+	end
+end
+
 local function SpellIcon(name)
 	if ( not name ) then return nil; end
-	return (AZSHistory_Icons and AZSHistory_Icons[name]) or (db and db.icons[name]);
+	local icons = AZSHistory_Icons or {};
+	return icons[name] or (db and db.icons[name]) or icons[Native(name)];
 end
 
 local function LearnSpellbook()
@@ -184,6 +398,12 @@ local function LearnSpellbook()
 			end
 		end
 	end);
+end
+
+local function OwnTalent(class, name)
+	local own = AZSHistory_Talents and AZSHistory_Talents[class or ""] or {};
+	if ( not name ) then return nil; end
+	return own[name] or own[Native(name)];
 end
 
 local function Copy(t)
@@ -220,6 +440,8 @@ local function NewRun()
 		spells = {}, picks = {}, events = {}, loot = {}, levels = {}, unlocked = {}, achievements = {},
 		ss = {}, jn = {}, jw = {}, snap = {},
 	};
+	local ph = AZS_GetPhase and AZS_GetPhase();
+	if ( Now() > 5 and (ph == "playing" or ph == "choosing" or ph == "paused") ) then cur.from = Now(); end
 	db.current = cur;
 	pendingSig = nil;
 end
@@ -276,12 +498,11 @@ end
 
 local function NoteTalent(name, icon, wait)
 	if ( not name or name == "" or IsJewel(name) ) then return; end
-	local own = AZSHistory_Talents and AZSHistory_Talents[cur.class or ""] or {};
 	if ( not spellNames ) then
 		spellNames = {};
 		for _, n in pairs(AZSHistory_SpellNames or {}) do spellNames[n] = 1; end
 	end
-	if ( spellNames[name] and not own[name] ) then return; end
+	if ( spellNames[Native(name)] and not OwnTalent(cur.class, name) ) then return; end
 	cur.talents = cur.talents or {};
 	local t = cur.talents[name];
 	if ( not t ) then
@@ -294,10 +515,9 @@ end
 
 local function ScanTalents(lines)
 	if ( not cur ) then return; end
-	local own = AZSHistory_Talents and AZSHistory_Talents[cur.class or ""] or {};
 	for i = 1, table.getn(lines or {}) do
 		local name = tostring(lines[i].name);
-		if ( lines[i].proc == 1 or own[name] ) then NoteTalent(name); end
+		if ( lines[i].proc == 1 or OwnTalent(cur.class, name) ) then NoteTalent(name); end
 	end
 end
 
@@ -639,61 +859,125 @@ local function OnRun()
 	if ( cur ) then Snapshot(); end
 end
 
-local function NoteLoot(r, msg)
-	local low = string.lower(msg);
-	local isDrop = event == "CHAT_MSG_LOOT" or string.find(msg, "|cff40ff40", 1, 1)
-		or string.find(msg, "|cff9d9d9d", 1, 1) or string.find(low, "loot", 1, 1)
-		or string.find(low, "collect", 1, 1);
-	if ( not isDrop or not string.find(msg, "[", 1, 1) ) then return false; end
-	if ( string.find(low, "receives loot", 1, 1) ) then return false; end
-	local entry;
-	local _, _, link = string.find(msg, "(|c%x+|Hitem:[%d:%-]+|h%[.-%]|h|r)");
-	if ( link ) then
-		entry = { l = link, n = LinkName(link), q = LinkQuality(link), i = ItemIcon(link) };
-	else
-		local _, _, hex, name = string.find(msg, "|c%x%x(%x%x%x%x%x%x)%[(.-)%]");
-		if ( not name ) then _, _, name = string.find(msg, "%[(.-)%]"); end
-		if ( not name or name == "" ) then return false; end
-		entry = { n = name, q = (hex and QUALITY_BY_HEX[string.lower(hex)]) or 2,
-			i = AZSHistory_Icons and AZSHistory_Icons[name] };
-	end
-	if ( string.find(msg, "|cff40ff40", 1, 1) or string.find(low, "new in your collection", 1, 1) ) then
-		entry.new = 1;
-	end
-	entry.t = Now();
-	table.insert(r.loot, entry);
-	return true;
-end
+local OnChat;
 
-local function OnChat(msg)
-	if ( not msg ) then return; end
-	local r = cur;
-	if ( not r and lastEndedAt and GetTime() - lastEndedAt < 15 ) then r = db.runs[1]; end
-	if ( not r ) then return; end
-	if ( NoteLoot(r, msg) ) then return; end
-	local _, _, xp = string.find(msg, "earn (%d+) talent experience");
-	if ( xp ) then
-		r.txp = tonumber(xp);
-		local _, _, points = string.find(msg, "(%d+) new talent point");
-		r.tpoints = tonumber(points) or 0;
-		return;
+do
+	local LOOT_LINE = "You receive loot:";
+	local NEW_LINE = "New in your collection!";
+	local TXP_ONE = "Your {class}s earn {xp} talent experience: 1 new talent point! Spend it in the armory.";
+	local TXP_MANY = "Your {class}s earn {xp} talent experience: {n} new talent points! Spend them in the armory.";
+	local TXP_NONE = "Your {class}s earn {xp} talent experience.";
+	local ZONE_OPEN = "{zone} is now open to your {class}s.";
+
+	local function PlainChat(msg)
+		local s = string.gsub(msg, "|c%x%x%x%x%x%x%x%x", "");
+		s = string.gsub(s, "|r", "");
+		return s;
 	end
-	local _, _, zone = string.find(msg, "^(.-) is now open to your");
-	if ( zone ) then
-		zone = string.gsub(zone, "|c%x%x%x%x%x%x%x%x", "");
-		for i = 1, table.getn(r.unlocked) do
-			if ( r.unlocked[i] == zone ) then return; end
+
+	local function Digits(text)
+		if ( not text ) then return nil; end
+		local s = string.gsub(tostring(text), "[,%s]", "");
+		local _, _, d = string.find(s, "(%d+)");
+		return tonumber(d);
+	end
+
+	local function ParseTalentXp(msg)
+		local plain = PlainChat(msg);
+		local caps = LangMatch(plain, TXP_ONE);
+		if ( caps ) then return Digits(caps.xp), 1; end
+		caps = LangMatch(plain, TXP_MANY);
+		if ( caps ) then return Digits(caps.xp), Digits(caps.n) or 0; end
+		caps = LangMatch(plain, TXP_NONE);
+		if ( caps ) then return Digits(caps.xp), 0; end
+		local _, _, xp = string.find(msg, "earn (%d+) talent experience");
+		if ( xp ) then
+			local _, _, points = string.find(msg, "(%d+) new talent point");
+			return tonumber(xp), tonumber(points) or 0;
 		end
-		table.insert(r.unlocked, zone);
-		return;
+		return nil;
 	end
-	local _, _, spell = string.find(msg, "learned a new spell: (.-) %(");
-	if ( spell and cur ) then
-		for i = table.getn(cur.spells), 1, -1 do
-			local key = cur.spells[i].key;
-			if ( not (AZSHistory_SpellNames and AZSHistory_SpellNames[key]) and not db.names[key] ) then
-				db.names[key] = spell;
-				break;
+
+	local function ParseZoneOpen(msg)
+		local caps = LangMatch(PlainChat(msg), ZONE_OPEN);
+		if ( caps ) then return caps.zone; end
+		local _, _, zone = string.find(msg, "^(.-) is now open to your");
+		return zone and PlainChat(zone);
+	end
+
+	local function LearnedSpell(msg)
+		local _, _, spell = string.find(msg, "learned a new spell: (.-) %(");
+		if ( spell ) then return spell; end
+		local tpl = ERR_LEARN_SPELL_S;
+		if ( type(tpl) ~= "string" ) then return nil; end
+		local a, b = string.find(tpl, "%s", 1, 1);
+		if ( not a ) then return nil; end
+		local pre, post = string.sub(tpl, 1, a - 1), string.sub(tpl, b + 1);
+		local s1, e1 = string.find(msg, pre, 1, 1);
+		if ( not s1 ) then return nil; end
+		local rest = string.sub(msg, e1 + 1);
+		if ( post ~= "" ) then
+			local s2 = string.find(rest, post, 1, 1);
+			if ( s2 ) then rest = string.sub(rest, 1, s2 - 1); end
+		end
+		rest = string.gsub(rest, "%s*%b().*$", "");
+		return rest ~= "" and rest or nil;
+	end
+
+	local function NoteLoot(r, msg)
+		local low = string.lower(msg);
+		local isDrop = event == "CHAT_MSG_LOOT" or string.find(msg, "|cff40ff40", 1, 1)
+			or string.find(msg, "|cff9d9d9d", 1, 1) or string.find(low, "loot", 1, 1)
+			or string.find(low, "collect", 1, 1) or LangHas(msg, LOOT_LINE) or LangHas(msg, NEW_LINE);
+		if ( not isDrop or not string.find(msg, "[", 1, 1) ) then return false; end
+		if ( string.find(low, "receives loot", 1, 1) ) then return false; end
+		local entry;
+		local _, _, link = string.find(msg, "(|c%x+|Hitem:[%d:%-]+|h%[.-%]|h|r)");
+		if ( link ) then
+			entry = { l = link, n = LinkName(link), q = LinkQuality(link), i = ItemIcon(link) };
+		else
+			local _, _, hex, name = string.find(msg, "|c%x%x(%x%x%x%x%x%x)%[(.-)%]");
+			if ( not name ) then _, _, name = string.find(msg, "%[(.-)%]"); end
+			if ( not name or name == "" ) then return false; end
+			entry = { n = name, q = (hex and QUALITY_BY_HEX[string.lower(hex)]) or 2,
+				i = AZSHistory_Icons and AZSHistory_Icons[name] };
+		end
+		if ( string.find(msg, "|cff40ff40", 1, 1) or string.find(low, "new in your collection", 1, 1) or LangHas(msg, NEW_LINE) ) then
+			entry.new = 1;
+		end
+		entry.t = Now();
+		table.insert(r.loot, entry);
+		return true;
+	end
+
+	function OnChat(msg)
+		if ( not msg ) then return; end
+		local r = cur;
+		if ( not r and lastEndedAt and GetTime() - lastEndedAt < 15 ) then r = db.runs[1]; end
+		if ( not r ) then return; end
+		if ( NoteLoot(r, msg) ) then return; end
+		local xp, points = ParseTalentXp(msg);
+		if ( xp ) then
+			r.txp = xp;
+			r.tpoints = points or 0;
+			return;
+		end
+		local zone = ParseZoneOpen(msg);
+		if ( zone ) then
+			for i = 1, table.getn(r.unlocked) do
+				if ( r.unlocked[i] == zone ) then return; end
+			end
+			table.insert(r.unlocked, zone);
+			return;
+		end
+		local spell = LearnedSpell(msg);
+		if ( spell and cur ) then
+			for i = table.getn(cur.spells), 1, -1 do
+				local key = cur.spells[i].key;
+				if ( not (AZSHistory_SpellNames and AZSHistory_SpellNames[key]) and not db.names[key] ) then
+					db.names[key] = spell;
+					break;
+				end
 			end
 		end
 	end
@@ -988,16 +1272,16 @@ local function SpellTip(run, s)
 		for i = 1, table.getn(s.lines) do
 			local l = s.lines[i];
 			if ( i == 1 ) then
-				GameTooltip:SetText(l[1], l[2], l[3], l[4]);
+				GameTooltip:SetText(Tr(l[1]), l[2], l[3], l[4]);
 			else
-				GameTooltip:AddLine(l[1], l[2], l[3], l[4], 1);
+				GameTooltip:AddLine(Tr(l[1]), l[2], l[3], l[4], 1);
 			end
 		end
 		return;
 	end
-	GameTooltip:SetText(s.n, 1, 1, 1);
+	GameTooltip:SetText(Tr(s.n), 1, 1, 1);
 	if ( s.racial ) then
-		GameTooltip:AddLine("Racial", GOLD[1], GOLD[2], GOLD[3]);
+		GameTooltip:AddLine(Tr("Racial"), GOLD[1], GOLD[2], GOLD[3]);
 	else
 		GameTooltip:AddLine("Rank " .. (s.r or 1), GOLD[1], GOLD[2], GOLD[3]);
 	end
@@ -1025,15 +1309,15 @@ local function LinesTip(lines, name, q)
 		for i = 1, table.getn(lines) do
 			local l = lines[i];
 			if ( i == 1 ) then
-				GameTooltip:SetText(l[1], l[2], l[3], l[4]);
+				GameTooltip:SetText(Tr(l[1]), l[2], l[3], l[4]);
 			else
-				GameTooltip:AddLine(l[1], l[2], l[3], l[4], 1);
+				GameTooltip:AddLine(Tr(l[1]), l[2], l[3], l[4], 1);
 			end
 		end
 		return;
 	end
 	local c = QUALITY[q or 1] or QUALITY[1];
-	GameTooltip:SetText(name or "?", c[1], c[2], c[3]);
+	GameTooltip:SetText(Tr(name) or "?", c[1], c[2], c[3]);
 end
 
 local function JewelLines(j)
@@ -1308,7 +1592,7 @@ local function StatGrid(v, y, entries, colX, labelW)
 		local cx = colX[col + 1];
 		local label = VText(v, BODY_FONT, 14, LABEL, "RIGHT");
 		label:SetPoint("TOPRIGHT", v, "TOPLEFT", cx, rowY);
-		label:SetText(entries[i][1]);
+		label:SetText(Tr(entries[i][1]));
 		local value = VText(v, BODY_FONT, 14, VALUE, "LEFT");
 		value:SetPoint("TOPLEFT", v, "TOPLEFT", cx + 12, rowY);
 		value:SetText(entries[i][2]);
@@ -1331,13 +1615,13 @@ local function LootGrid(v, y, items, cols, most)
 		s.tip = function() ItemTip(it.l, it.n, it.q, it.lines); end;
 		local name = VText(v, BODY_FONT, 12, qc, "LEFT");
 		name:SetPoint("LEFT", s, "RIGHT", 6, 0);
-		name:SetWidth(colW - 36 - (it.new and 30 or 0));
+		name:SetWidth(colW - 36 - (it.new and 40 or 0));
 		name:SetHeight(14);
-		name:SetText(it.n);
+		name:SetText(Tr(it.n));
 		if ( it.new ) then
 			local tag = VText(v, BODY_FONT, 10, GREEN, "LEFT");
 			tag:SetPoint("LEFT", name, "RIGHT", 3, 0);
-			tag:SetText("NEW");
+			tag:SetText(Tr("NEW"));
 		end
 	end
 	local rowsUsed = math.ceil(n / cols);
@@ -1351,17 +1635,19 @@ local function LootGrid(v, y, items, cols, most)
 	return y2;
 end
 
-local function DrawSummary(v, run)
+local DRAW = {};
+
+function DRAW.summary(v, run)
 	local y = 0;
 	local lines = {};
 	if ( (run.tpoints or 0) > 0 ) then
 		table.insert(lines, { (run.tpoints == 1) and "+1 talent point!" or string.format("+%d talent points!", run.tpoints), TEXT });
 	end
 	for i = 1, table.getn(run.unlocked or {}) do
-		table.insert(lines, { "New zone opened: " .. run.unlocked[i], GREEN });
+		table.insert(lines, { "New zone opened: " .. Tr(run.unlocked[i]), GREEN });
 	end
 	for i = 1, table.getn(run.achievements or {}) do
-		table.insert(lines, { "Achievement: " .. run.achievements[i], GOLD });
+		table.insert(lines, { "Achievement: " .. Tr(run.achievements[i]), GOLD });
 	end
 	local newLoot = 0;
 	for i = 1, table.getn(run.loot or {}) do
@@ -1410,7 +1696,7 @@ local function DrawSummary(v, run)
 	}, { VW * 0.27, VW * 0.77 });
 end
 
-local function DrawBuild(v, run)
+function DRAW.build(v, run)
 	local y = Header(v, "Spells", 0, 0, VW);
 	local build = run.build or {};
 	if ( table.getn(build) == 0 ) then
@@ -1436,7 +1722,7 @@ local function DrawBuild(v, run)
 		local s = "";
 		for i = 1, n do
 			if ( not build[i].racial ) then
-				s = s .. (s == "" and "" or "  ·  ") .. build[i].n .. " " .. (build[i].r or 1);
+				s = s .. (s == "" and "" or "  ·  ") .. Tr(build[i].n) .. " " .. (build[i].r or 1);
 			end
 		end
 		names:SetText(s);
@@ -1482,15 +1768,27 @@ end
 local TALENT_ROWS = 7;
 local TALENT_H = 36;
 
-local function TalentTip(name, t, info)
-	GameTooltip:SetText(name, 1, 1, 1);
+local function JoinedAt(run)
+	if ( run.from ) then return run.from; end
+	local first = run.spells and run.spells[1];
+	if ( first and first.start and (first.at or 0) > 5 ) then return first.at; end
+	return nil;
+end
+
+local function Before(run, t)
+	local from = JoinedAt(run);
+	return from and (t.at or 0) <= from + 2 and from;
+end
+
+local function TalentTip(run, name, t, info)
+	GameTooltip:SetText(Tr(name), 1, 1, 1);
 	if ( info ) then
 		local kind = "";
 		if ( info[2] and string.find(info[2], "^Milestone%.") ) then kind = " · milestone"; end
 		if ( info[2] and string.find(info[2], "^Capstone%.") ) then kind = " · capstone"; end
-		GameTooltip:AddLine(info[1] .. kind, GOLD[1], GOLD[2], GOLD[3]);
+		GameTooltip:AddLine(Tr(info[1]) .. kind, GOLD[1], GOLD[2], GOLD[3]);
 		if ( info[2] ) then
-			local desc = string.gsub(info[2], "^%a+%.%s*", "");
+			local desc = TalentText(info);
 			GameTooltip:AddLine(desc, NORMAL_FONT_COLOR.r, NORMAL_FONT_COLOR.g, NORMAL_FONT_COLOR.b, 1);
 		end
 	else
@@ -1501,14 +1799,18 @@ local function TalentTip(name, t, info)
 	end
 	if ( t.h and t.h > 0 ) then GameTooltip:AddLine(Comma(t.h) .. " healing", GREEN[1], GREEN[2], GREEN[3]); end
 	if ( t.w ) then GameTooltip:AddLine(string.format("Maximum rate: 1 time in %s seconds", Short(t.w)), MUTED[1], MUTED[2], MUTED[3]); end
-	GameTooltip:AddLine("First time at " .. Clock(t.at), MUTED[1], MUTED[2], MUTED[3]);
+	local from = Before(run, t);
+	if ( from ) then
+		GameTooltip:AddLine("The addon started to record this run at " .. Clock(from) .. ". This talent was active before that time.", MUTED[1], MUTED[2], MUTED[3], 1);
+	else
+		GameTooltip:AddLine("First time at " .. Clock(t.at), MUTED[1], MUTED[2], MUTED[3]);
+	end
 end
 
-local function DrawTalents(v, run)
-	local own = AZSHistory_Talents and AZSHistory_Talents[run.class or ""] or {};
+function DRAW.talents(v, run)
 	local list = {};
 	for name, t in pairs(run.talents or {}) do
-		table.insert(list, { n = name, t = t, info = own[name] });
+		table.insert(list, { n = name, t = t, info = OwnTalent(run.class, name) });
 	end
 	table.sort(list, function(a, b)
 		local x, y = (a.t.d or 0) + (a.t.h or 0), (b.t.d or 0) + (b.t.h or 0);
@@ -1531,17 +1833,17 @@ local function DrawTalents(v, run)
 		local s = VSlot(v, 30);
 		s:SetPoint("TOPLEFT", v, "TOPLEFT", 0, ry);
 		s:Set(t.i or SpellIcon(e.n), RIM);
-		s.tip = function() TalentTip(e.n, t, info); end;
+		s.tip = function() TalentTip(run, e.n, t, info); end;
 		local name = VText(v, BODY_FONT, 13, GOLD, "LEFT");
 		name:SetPoint("TOPLEFT", v, "TOPLEFT", 40, ry - 1);
 		name:SetWidth(VW - 210);
 		name:SetHeight(15);
-		name:SetText(e.n);
+		name:SetText(Tr(e.n));
 		local sub = VText(v, BODY_FONT, 11, MUTED, "LEFT");
 		sub:SetPoint("TOPLEFT", v, "TOPLEFT", 40, ry - 17);
 		sub:SetWidth(VW - 210);
 		sub:SetHeight(13);
-		local kind = info and info[1] or "Talent or effect";
+		local kind = info and Tr(info[1]) or "Talent or effect";
 		if ( info and info[2] and string.find(info[2], "^Milestone%.") ) then kind = kind .. " · milestone"; end
 		if ( info and info[2] and string.find(info[2], "^Capstone%.") ) then kind = kind .. " · capstone"; end
 		sub:SetText(kind);
@@ -1557,10 +1859,12 @@ local function DrawTalents(v, run)
 		end
 		local when = VText(v, BODY_FONT, 11, MUTED, "RIGHT");
 		when:SetPoint("TOPRIGHT", v, "TOPLEFT", VW - 16, ry - 17);
+		local from = Before(run, t);
+		local at = from and ("before " .. Clock(from)) or ("from " .. Clock(t.at));
 		if ( t.w ) then
-			when:SetText(string.format("1 time in %s s · from %s", Short(t.w), Clock(t.at)));
+			when:SetText(string.format("1 time in %s s · %s", Short(t.w), at));
 		else
-			when:SetText("from " .. Clock(t.at));
+			when:SetText(at);
 		end
 	end
 	v.bar:Sync(v.offset, most, TALENT_ROWS, table.getn(list));
@@ -1597,7 +1901,7 @@ local function Bars(v, x, y, w, lines, total, color, most)
 		name:SetPoint("TOPLEFT", v, "TOPLEFT", x + 25, by - 3);
 		name:SetWidth(w - 110);
 		name:SetHeight(13);
-		name:SetText(l.n);
+		name:SetText(Tr(l.n));
 		local val = VText(v, BODY_FONT, 11, TEXT, "RIGHT");
 		val:SetPoint("TOPRIGHT", v, "TOPLEFT", x + w - 4, by - 3);
 		local share = l.s;
@@ -1607,7 +1911,7 @@ local function Bars(v, x, y, w, lines, total, color, most)
 	return y - math.min(table.getn(lines), most) * 20;
 end
 
-local function DrawDamage(v, run)
+function DRAW.damage(v, run)
 	local cls = CLASSES[run.class or ""] or { nil, 0.75, 0.75, 0.8 };
 	local color = { cls[2], cls[3], cls[4] };
 	local half = (VW - 16) / 2;
@@ -1692,7 +1996,7 @@ local function GearLine(s)
 	return out;
 end
 
-local function DrawHero(v, run)
+function DRAW.hero(v, run)
 	local s = run.stats;
 	if ( not s ) then
 		local none = VText(v, BODY_FONT, 12, MUTED, "CENTER");
@@ -1730,18 +2034,19 @@ local function Timeline(run)
 	local out = {};
 	for i = 1, table.getn(run.picks or {}) do
 		local p = run.picks[i];
-		local text, icon, c = p.n, p.i, TEXT;
+		local pn = Tr(p.n);
+		local text, icon, c = pn, p.i, TEXT;
 		if ( p.k == "spell" ) then
-			text = "New spell: " .. p.n;
+			text = Tr("New spell") .. ": " .. pn;
 		elseif ( p.k == "rank" ) then
-			text = p.n .. " · rank " .. (p.r or "?");
+			text = pn .. " · rank " .. (p.r or "?");
 		elseif ( p.k == "jewel" ) then
 			c = QUALITY[p.q or 1] or TEXT;
-			text = p.n .. (RARITY[p.q or 1] and (" · " .. RARITY[p.q or 1]) or "");
-			if ( p.x ) then text = text .. ", in place of " .. p.x; end
+			text = pn .. (RARITY[p.q or 1] and (" · " .. Tr(RARITY[p.q or 1])) or "");
+			if ( p.x ) then text = text .. ", in place of " .. Tr(p.x); end
 		elseif ( p.k == "jewelup" ) then
 			c = QUALITY[p.q or 1] or TEXT;
-			text = p.n .. " · higher rank";
+			text = pn .. " · higher rank";
 		end
 		table.insert(out, { t = p.t, text = text, icon = icon or SpellIcon(p.n), c = c });
 	end
@@ -1754,15 +2059,15 @@ local function Timeline(run)
 	for i = 1, table.getn(run.events or {}) do
 		local e = run.events[i];
 		local info = EVENT[e.k] or { QUESTION, TEXT };
-		local text = e.x or e.n or e.k;
-		if ( e.k == "guardian" and e.n and e.n ~= "" ) then text = "Guardian killed: " .. e.n; end
-		if ( e.k == "bossdown" and e.n and e.n ~= "" ) then text = "Boss killed: " .. e.n; end
+		local text = Tr(e.x or e.n) or e.k;
+		if ( e.k == "guardian" and e.n and e.n ~= "" ) then text = "Guardian killed: " .. Tr(e.n); end
+		if ( e.k == "bossdown" and e.n and e.n ~= "" ) then text = "Boss killed: " .. Tr(e.n); end
 		if ( e.k == "endless" ) then text = "Endless mode started"; end
 		table.insert(out, { t = e.t, text = text, icon = info[1], c = info[2] });
 	end
 	for i = 1, table.getn(run.loot or {}) do
 		local l = run.loot[i];
-		table.insert(out, { t = l.t or run.t, text = "Loot: " .. l.n .. (l.new and "  |cff40ff40NEW|r" or ""),
+		table.insert(out, { t = l.t or run.t, text = "Loot: " .. Tr(l.n) .. (l.new and "  |cff40ff40NEW|r" or ""),
 			icon = l.i, c = QUALITY[l.q or 1] or TEXT });
 	end
 	for lvl, t in pairs(run.levels or {}) do
@@ -1777,7 +2082,7 @@ local function Timeline(run)
 	return out;
 end
 
-local function DrawTimeline(v, run)
+function DRAW.timeline(v, run)
 	local items = Timeline(run);
 	local most = math.max(0, table.getn(items) - TIMELINE_ROWS);
 	v.offset = math.max(0, math.min(v.offset or 0, most));
@@ -1829,8 +2134,6 @@ views.talents.bar = Scrollbar(views.talents, TALENT_ROWS * TALENT_H - 6, functio
 end);
 views.talents.bar:SetPoint("TOPRIGHT", views.talents, "TOPRIGHT", 0, -28);
 
-local DRAW = { summary = DrawSummary, build = DrawBuild, talents = DrawTalents, damage = DrawDamage, hero = DrawHero,
-	timeline = DrawTimeline };
 
 local function DrawDetail(run)
 	for i = 1, table.getn(TABS) do views[TABS[i]]:Hide(); end
@@ -1848,11 +2151,11 @@ local function DrawDetail(run)
 	delete:Show();
 	local res = RESULT[run.result] or RESULT.quit;
 	if ( run.won ) then res = RESULT.victory; end
-	dTitle:SetText(res[1]);
+	dTitle:SetText(Tr(res[1]));
 	Color(dTitle, res[2]);
-	dSub:SetText(string.format("%s, %s %s · %s", run.hero or "?", run.rname or run.race or "", run.cname or "", run.zname or "?"));
+	dSub:SetText(string.format("%s, %s %s · %s", run.hero or "?", Tr(run.rname or run.race) or "", Tr(run.cname) or "", Tr(run.zname) or "?"));
 	local meta = DateText(run.ended or run.started);
-	if ( run.zsub and run.zsub ~= "" ) then meta = meta .. " · " .. run.zsub; end
+	if ( run.zsub and run.zsub ~= "" ) then meta = meta .. " · " .. Tr(run.zsub); end
 	if ( run.mods and run.mods ~= "" and run.mods ~= "100 100 100 100" ) then
 		local _, _, a, b, c, d = string.find(run.mods, "(%d+) (%d+) (%d+) (%d+)");
 		meta = meta .. string.format(" · density %s%% health %s%% damage %s%% speed %s%%", a or "?", b or "?", c or "?", d or "?");
@@ -1905,7 +2208,7 @@ Refresh = function()
 		b:Paint();
 	end
 	local class = db.settings.class;
-	classButton.text:SetText(class and ((CLASSES[class] and "Only " .. string.upper(string.sub(class, 1, 1)) .. string.sub(class, 2)) or class) or "All classes");
+	classButton.text:SetText(class and ((CLASSES[class] and "Only " .. (LangKey("class." .. class .. ".name") or (string.upper(string.sub(class, 1, 1)) .. string.sub(class, 2)))) or class) or "All classes");
 	shown = {};
 	for i = 1, table.getn(db.runs) do
 		if ( RunMatches(db.runs[i], filter, class) ) then table.insert(shown, i); end
@@ -1928,11 +2231,11 @@ Refresh = function()
 			row.icon:Set(cls[1], { cls[2], cls[3], cls[4] });
 			row.name:SetText(string.format("%s |cff9d9d9d%s|r", r.hero or "?", tostring(r.lvl or "?")));
 			row.name:SetTextColor(cls[2], cls[3], cls[4]);
-			row.zone:SetText(r.zname or "?");
+			row.zone:SetText(Tr(r.zname) or "?");
 			local res = RESULT[r.result] or RESULT.quit;
 			local label = res[3];
 			if ( r.won and r.result ~= "victory" ) then label = "Victory+"; end
-			row.result:SetText(label .. "  " .. Clock(r.t));
+			row.result:SetText(Tr(label) .. "  " .. Clock(r.t));
 			Color(row.result, (r.won or r.result == "victory") and WIN or res[2]);
 			row.when:SetText(DayText(r.ended or r.started) .. " " .. DateText(r.ended or r.started, "%H:%M"));
 			row:Show();
@@ -1988,6 +2291,7 @@ end);
 
 frame:SetScript("OnShow", function()
 	PlaySound("igCharacterInfoOpen");
+	DetectLang();
 	if ( AZS_GetPhase and AZS_GetPhase() == "ready" ) then HideHud(); end
 	Refresh();
 end);
@@ -2121,7 +2425,8 @@ local function Init()
 	db.names = db.names or {};
 	db.icons = db.icons or {};
 	db.settings = db.settings or {};
-	db.diag = nil;
+	db.diag = nil; db.tl = nil;
+	SetLang(db.lang);
 	db.version = 2;
 	for i = table.getn(db.runs), 1, -1 do
 		local r = db.runs[i];
@@ -2159,6 +2464,7 @@ events:SetScript("OnEvent", function()
 		if ( arg1 == "AZSRUN" ) then
 			OnRun();
 		elseif ( arg1 == "AZSZONE" ) then
+			DetectLang();
 			OnZone();
 		elseif ( arg1 == "AZSSPELLS" ) then
 			if ( not cur ) then OnRun(); end
@@ -2185,6 +2491,7 @@ events:SetScript("OnEvent", function()
 		LearnSpellbook();
 	elseif ( event == "PLAYER_ENTERING_WORLD" ) then
 		LearnSpellbook();
+		DetectLang();
 		ApplyKey();
 	elseif ( event == "PLAYER_LOGOUT" ) then
 		if ( cur ) then CaptureEnd(); end

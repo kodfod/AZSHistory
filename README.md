@@ -53,6 +53,7 @@ To close the window, push Escape. To move the window, drag its top area.
 - The game shows its end screen above all addon windows. Close the end screen before you open the history.
 - The Key Bindings page of the game does not show addon key bindings. Use `/runs key` to set a key for the window.
 - The game gives times in UTC. Use `/runs tz` to set your time zone.
+- The window shows the names of the game (spells, talents, zones, bosses, items and messages) in the language that the game uses now. The addon uses only the translations of the game. All other text of the addon is in English. Some long spell descriptions stay in the language that the game used during the run.
 
 ## Saved data
 
