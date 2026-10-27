@@ -238,6 +238,8 @@ local function Snapshot()
 	end
 end
 
+local spellWait = 0;
+
 local function ScanSpells()
 	if ( not cur ) then return; end
 	local list = AZS_SPELLS or {};
@@ -255,10 +257,12 @@ local function ScanSpells()
 			table.insert(cur.spells, { key = key, spell = s.spell, at = Now(), start = first and 1 or nil });
 			if ( not first ) then
 				AddPick("spell", name, { r = rank, i = SpellIcon(name), key = key });
+				spellWait = 0;
 			end
 		elseif ( rank > had ) then
 			cur.ss[key] = rank;
 			AddPick("rank", name, { r = rank, i = SpellIcon(name), key = key });
+			spellWait = 0;
 		end
 	end
 end
@@ -361,13 +365,13 @@ local function Round2(v)
 	return math.floor((v or 1) * 100 + 0.5) / 100;
 end
 
-local function ScanSlot(slot)
+local function ScanTip(method, a, b, max)
 	local lines = {};
 	scan:SetOwner(UIParent, "ANCHOR_NONE");
 	scan:ClearLines();
-	local ok = pcall(scan.SetInventoryItem, scan, "player", slot);
+	local ok = method and pcall(method, scan, a, b);
 	if ( ok ) then
-		local n = math.min(scan:NumLines() or 0, 14);
+		local n = math.min(scan:NumLines() or 0, max);
 		for i = 1, n do
 			local fs = getglobal("AZSHistoryScanTipTextLeft" .. i);
 			local text = fs and fs:GetText();
@@ -379,6 +383,35 @@ local function ScanSlot(slot)
 	end
 	scan:Hide();
 	return lines;
+end
+
+local function ScanSlot(slot)
+	return ScanTip(scan.SetInventoryItem, "player", slot, 14);
+end
+
+local function KeepSpellLines()
+	if ( GetTime() < spellWait or not GetNumSpellTabs or not scan.SetSpell ) then return; end
+	spellWait = GetTime() + 5;
+	local want = {};
+	local list = AZS_SPELLS or {};
+	for i = 1, table.getn(list) do
+		local key = tostring(list[i].key);
+		want[SpellName(key)] = key;
+	end
+	cur.sl = cur.sl or {};
+	pcall(function()
+		for tab = 1, GetNumSpellTabs() do
+			local _, _, first, count = GetSpellTabInfo(tab);
+			first = first or 0;
+			for i = first + 1, first + (count or 0) do
+				local key = want[GetSpellName(i, "spell") or ""];
+				if ( key ) then
+					local lines = ScanTip(scan.SetSpell, i, "spell", 30);
+					if ( table.getn(lines) > 1 ) then cur.sl[key] = lines; end
+				end
+			end
+		end
+	end);
 end
 
 local function HasStats(lines)
@@ -450,7 +483,7 @@ local function CaptureEnd()
 		local s = list[i];
 		local name = SpellName(tostring(s.key));
 		table.insert(build, { key = tostring(s.key), n = name, r = tonumber(s.rank) or 1, i = SpellIcon(name),
-			racial = (i == table.getn(list) and table.getn(list) > 1) and 1 or nil });
+			lines = cur.sl and cur.sl[tostring(s.key)], racial = (i == table.getn(list) and table.getn(list) > 1) and 1 or nil });
 	end
 	if ( table.getn(build) > 0 ) then cur.build = build; end
 	local jewels = CaptureSlots(JEWEL_SLOTS, true);
@@ -514,7 +547,7 @@ local function Finalize(e, result, stale)
 	r.rname = r.rname or e.rname;
 	r.zname = r.zname or e.zname;
 	r.ss = nil; r.jn = nil; r.jw = nil; r.jsig = nil; r.seenSpells = nil; r.jewelsSeen = nil;
-	r.jl = nil; r.jlTry = nil;
+	r.jl = nil; r.jlTry = nil; r.sl = nil;
 	if ( r.result ~= "quit" ) then r.snap = nil; end
 	table.insert(db.runs, 1, r);
 	Prune();
@@ -951,6 +984,17 @@ local function Caps(v, text, x, y, w)
 end
 
 local function SpellTip(run, s)
+	if ( s.lines and table.getn(s.lines) > 1 ) then
+		for i = 1, table.getn(s.lines) do
+			local l = s.lines[i];
+			if ( i == 1 ) then
+				GameTooltip:SetText(l[1], l[2], l[3], l[4]);
+			else
+				GameTooltip:AddLine(l[1], l[2], l[3], l[4], 1);
+			end
+		end
+		return;
+	end
 	GameTooltip:SetText(s.n, 1, 1, 1);
 	if ( s.racial ) then
 		GameTooltip:AddLine("Racial", GOLD[1], GOLD[2], GOLD[3]);
@@ -2102,7 +2146,7 @@ events:SetScript("OnUpdate", function()
 	scanWait = 0;
 	ScanJewels();
 	local ph = AZS_GetPhase and AZS_GetPhase();
-	if ( ph ~= "victory" and ph ~= "dead" ) then KeepJewelLines(); end
+	if ( ph ~= "victory" and ph ~= "dead" ) then KeepJewelLines(); KeepSpellLines(); end
 end);
 
 events:SetScript("OnEvent", function()
